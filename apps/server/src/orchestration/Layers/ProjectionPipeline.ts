@@ -2089,22 +2089,21 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             deletedThreadIds: new Set<string>(),
             prunedThreadRelativePaths: new Map<string, Set<string>>(),
           };
-          yield* sql.withTransaction(
-            Effect.gen(function* () {
-              yield* Effect.forEach(
-                projectors,
-                (projector) => projector.apply(event, attachmentSideEffects),
-                { concurrency: 1, discard: true },
-              );
-              // Runtime projectors commit together. Bootstrap still advances each cursor separately.
-              yield* projectionStateRepository.upsertMany(
-                projectors.map((projector) => ({
-                  projector: projector.name,
-                  lastAppliedSequence: event.sequence,
-                  updatedAt: event.occurredAt,
-                })),
-              );
-            }),
+          // No transaction here: the caller's makes these writes atomic. A nested one is a
+          // savepoint that stays open until the caller commits, so SQLite journals every page
+          // written after it and spills that journal to a temp file on ordinary commands.
+          yield* Effect.forEach(
+            projectors,
+            (projector) => projector.apply(event, attachmentSideEffects),
+            { concurrency: 1, discard: true },
+          );
+          // Runtime projectors commit together. Bootstrap still advances each cursor separately.
+          yield* projectionStateRepository.upsertMany(
+            projectors.map((projector) => ({
+              projector: projector.name,
+              lastAppliedSequence: event.sequence,
+              updatedAt: event.occurredAt,
+            })),
           );
           const hasCleanup =
             attachmentSideEffects.deletedThreadIds.size > 0 ||
@@ -2119,15 +2118,18 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         Effect.provideService(FileSystem.FileSystem, fileSystem),
         Effect.provideService(Path.Path, path),
         Effect.provideService(ServerConfig, serverConfig),
-        Effect.catchTag("SqlError", (sqlError) =>
-          Effect.fail(toPersistenceSqlError("ProjectionPipeline.projectEvent:query")(sqlError)),
-        ),
       );
 
     const projectEvent: OrchestrationProjectionPipelineShape["projectEvent"] = Effect.fn(
       "projectEvent",
     )(function* (event) {
-      const cleanup = yield* projectEventDeferred(event);
+      const cleanup = yield* sql
+        .withTransaction(projectEventDeferred(event))
+        .pipe(
+          Effect.catchTag("SqlError", (sqlError) =>
+            Effect.fail(toPersistenceSqlError("ProjectionPipeline.projectEvent:query")(sqlError)),
+          ),
+        );
       yield* cleanup;
     });
 

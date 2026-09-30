@@ -36,6 +36,9 @@ export interface OrchestrationProjectionPipelineShape {
   /**
    * Project an event inside a caller's transaction and return its attachment
    * cleanup. Run the returned effect only after the outer transaction commits.
+   *
+   * Opens no transaction of its own, so the projectors are atomic only through
+   * the caller's.
    */
   readonly projectEventDeferred: (
     event: OrchestrationEvent,

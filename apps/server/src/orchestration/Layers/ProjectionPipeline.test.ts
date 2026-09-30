@@ -115,6 +115,61 @@ it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-curs
   },
 );
 
+it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-transaction-")))(
+  "OrchestrationProjectionPipeline caller transaction",
+  (it) => {
+    it.effect("projects inside the caller's transaction without nesting another", () =>
+      Effect.gen(function* () {
+        const projectionPipeline = yield* OrchestrationProjectionPipeline;
+        const eventStore = yield* OrchestrationEventStore;
+        const sql = yield* SqlClient.SqlClient;
+        let transactions = 0;
+        const tracer = Tracer.make({
+          span: (options) => {
+            if (options.name === "sql.transaction") transactions += 1;
+            return new Tracer.NativeSpan(options);
+          },
+        });
+        const createdAt = "2026-01-01T00:00:00.000Z";
+        const projectId = ProjectId.make("project-caller-transaction");
+
+        const event = yield* eventStore.append({
+          type: "project.created",
+          eventId: EventId.make("evt-caller-transaction-project"),
+          aggregateKind: "project",
+          aggregateId: projectId,
+          occurredAt: createdAt,
+          commandId: CommandId.make("cmd-caller-transaction-project"),
+          causationEventId: null,
+          correlationId: null,
+          metadata: {},
+          payload: {
+            projectId,
+            title: "Caller transaction project",
+            workspaceRoot: "/tmp/project-caller-transaction",
+            defaultModelSelection: null,
+            scripts: [],
+            createdAt,
+            updatedAt: createdAt,
+          },
+        });
+
+        const cleanup = yield* sql
+          .withTransaction(projectionPipeline.projectEventDeferred(event))
+          .pipe(Effect.withTracer(tracer));
+        yield* cleanup;
+
+        // A nested transaction is a savepoint SQLite keeps open until the caller commits.
+        assert.strictEqual(transactions, 1);
+        assert.deepEqual(
+          yield* sql`SELECT title FROM projection_projects WHERE project_id = ${projectId}`,
+          [{ title: "Caller transaction project" }],
+        );
+      }),
+    );
+  },
+);
+
 it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-cleanup-span-")))(
   "OrchestrationProjectionPipeline attachment cleanup span",
   (it) => {
