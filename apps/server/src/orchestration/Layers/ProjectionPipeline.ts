@@ -2123,13 +2123,12 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
     const projectEvent: OrchestrationProjectionPipelineShape["projectEvent"] = Effect.fn(
       "projectEvent",
     )(function* (event) {
-      const cleanup = yield* sql
-        .withTransaction(projectEventDeferred(event))
-        .pipe(
-          Effect.catchTag("SqlError", (sqlError) =>
+      const cleanup = yield* sql.withTransaction(projectEventDeferred(event)).pipe(
+        Effect.catchTags({
+          SqlError: (sqlError) =>
             Effect.fail(toPersistenceSqlError("ProjectionPipeline.projectEvent:query")(sqlError)),
-          ),
-        );
+        }),
+      );
       yield* cleanup;
     });
 
